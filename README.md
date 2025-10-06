@@ -14,9 +14,9 @@ Language is German only at the moment<br>
 <br>
 Dungeons IDs will be shown account-wide<br>
 <br>
-<br>
 <img width="249" height="188" alt="image" src="https://github.com/user-attachments/assets/afc5a760-5460-4304-b348-970e27c43fa7" />
-
+<br>
+<br>
 How does it work?<br>
 Since there is no 5-man Dungeon ID in Vanilla 1.12 this Addon is triggered by Dungeon Zones and a Loading Screen (when you enter the dungeon).<br>
 Because some dungeons have areas in front of them, which are outside but have the same zone name, the Addon will ask you if it should start a new ID, when you enter a dungeon.<br>
