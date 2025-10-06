@@ -10,6 +10,7 @@ Commands:<br>
 <br>
 <br>
 Mouseover the button and you will see the active IDs with the timers written in MM:SS<br>
+The Button is movable simply by Drag & Drop. <br>
 Language is German only at the moment<br>
 <br>
 Dungeons IDs will be shown account-wide<br>
