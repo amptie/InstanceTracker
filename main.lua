@@ -6,6 +6,8 @@
 local ADDON_NAME = "InstanceTracker"
 local TRACK_DURATION = 60 * 60
 local MAX_TIMERS = 5
+local IT_WasInDungeon = false
+local IT_Initialized  = false
 
 -- ===== 5er-Instanzen: deutsch + englisch, in lowercase vergleichen =====
 local DUNGEONS = {}
@@ -18,7 +20,7 @@ add({"Wailing Caverns"})
 add({"The Deadmines"})
 add({"Shadowfang Keep"})
 add({"Blackfathom Deeps"})
-add({"Stormwind Stockade"})
+add({"The Stockade"})
 add({"Dragonmaw Retreat"})
 add({"Gnomeregan"})
 add({"Razorfen Kraul"})
@@ -39,6 +41,7 @@ add({"Scholomance"})
 add({"Stratholme"})
 add({"Stormwind Vault"})
 add({"The Black Morass"})
+
 
 -- =======================
 -- SavedVariables
@@ -106,7 +109,28 @@ end
 
 local function isFiveManDungeon(zone)
   if not zone then return false end
-  return DUNGEONS[string.lower(zone)] == true
+  local z = string.lower(zone)
+  return DUNGEONS[z] == true
+end
+
+local function handleZoneEdge()
+  local zone = GetRealZoneText()
+  local nowIn = isFiveManDungeon(zone)
+
+  if not IT_Initialized then
+    -- Erster Aufruf nach Login/Reload: nur Grundzustand setzen
+    IT_WasInDungeon = nowIn
+    IT_Initialized = true
+    return
+  end
+
+  if (not IT_WasInDungeon) and nowIn then
+    -- Kante: rein in 5er → HIER fragen/triggern
+    tryDetectInstanceEntry(true)   -- oder dein Startpfad, der die 60-Min-ID anlegt
+  end
+
+  -- Zustand für nächstes Mal merken
+  IT_WasInDungeon = nowIn
 end
 
 local function canStartAnother()
@@ -419,7 +443,8 @@ frame:SetScript("OnEvent", function()
     createMinimapButton()
 
   elseif event == "PLAYER_ENTERING_WORLD" then
-    pruneExpired()
+    handleZoneEdge()
+	pruneExpired()
     tryDetectInstanceEntry(true)   -- echter Eintritt (Ladebildschirm)
     -- Verzögerte Zweitprüfung: OHNE Startflag!
     if not IT_Delayer then
@@ -436,7 +461,8 @@ frame:SetScript("OnEvent", function()
     IT_Delayer:Show()
 
   elseif event == "ZONE_CHANGED_NEW_AREA" then
-    -- Nur Status/Debug, nie Start
+    handleZoneEdge()
+	-- Nur Status/Debug, nie Start
     tryDetectInstanceEntry(false)
   end
 end)
