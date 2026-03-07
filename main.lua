@@ -1,4 +1,6 @@
 -- InstanceTracker.lua - WoW 1.12 (Lua 5.0) compatible
+-- SubZone-basierte Erkennung: Neue ID automatisch nach Ladebildschirm
+-- wenn SubZone sich aendert und in der Instanz-SubZone-Liste steht.
 
 -- =======================
 -- Config
@@ -6,70 +8,41 @@
 local ADDON_NAME = "InstanceTracker"
 local TRACK_DURATION = 60 * 60
 local MAX_TIMERS = 5
-local IT_WasInDungeon = false
-local IT_Initialized  = false
+local IT_Initialized = false
 
--- ===== 5er-Instanzen: deutsch + englisch, in lowercase vergleichen =====
-local DUNGEONS = {}
-local function add(names)
-  for i=1, table.getn(names) do DUNGEONS[string.lower(names[i])] = true end
+-- Instanz-SubZones: SubZone (GetSubZoneText) -> Anzeigename in der Liste
+-- addSubZone("SubZone-Name", "Anzeige als") - z.B. "Warpwood Quarter" -> "Dire Maul"
+local INSTANCE_SUBZONES = {}
+local function addSubZone(subZone, displayName)
+  INSTANCE_SUBZONES[string.lower(subZone)] = displayName or subZone
 end
-
-add({"Ragefire Chasm"})
-add({"Wailing Caverns"})
-add({"The Deadmines"})
-add({"Shadowfang Keep"})
-add({"Blackfathom Deeps"})
-add({"The Stockade"})
-add({"Dragonmaw Retreat"})
-add({"Gnomeregan"})
-add({"Razorfen Kraul"})
-add({"The Crescent Grove"})
-add({"Scarlet Monastery"})
-add({"Stormwrought Ruins"})
-add({"Razorfen Downs"})
-add({"Uldaman"})
-add({"Gilneas City"})
-add({"Zul'Farrak"})
-add({"Maraudon"})
-add({"Hateforge Quarry"})
-add({"Temple of Atal'Hakkar"})
-add({"Blackrock Depths"})
-add({"Blackrock Spire"})
-add({"Dire Maul"})
-add({"Scholomance"})
-add({"Stratholme"})
-add({"Stormwind Vault"})
-add({"The Black Morass"})
-
+addSubZone("Warpwood Quarter", "Dire Maul")
+addSubZone("Stratholme", "Stratholme")
 
 -- =======================
 -- SavedVariables
 -- =======================
 InstanceTrackerDB = InstanceTrackerDB or {
-  entries = {},   -- array: { {zone=string, entered=epoch, expires=epoch}, ... }
+  entries = {},
   lastSession = 0,
+  lastSubZone = "",
+  btn = {},
 }
 
 -- =======================
 -- State & Frame
 -- =======================
-local frame = CreateFrame("Frame") -- WoW 1.12 UI API
+local frame = CreateFrame("Frame")
 frame:RegisterEvent("VARIABLES_LOADED")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
 
--- (Altlasten-Variablen, falls du sie irgendwo nutzt)
-local wasInInstance = false
-local lastInstanceName = nil
-local lastEnterStamp = 0
-
 -- =======================
 -- Helpers (Lua 5.0 safe)
 -- =======================
 local function now()
-  return time() -- epoch seconds (logout-fest)
+  return time()
 end
 
 local function tlen(t)
@@ -79,18 +52,21 @@ end
 local function format_mmss(sec)
   if sec < 0 then sec = 0 end
   local m = math.floor(sec / 60)
-  local s = math.floor(math.mod(sec, 60)) -- kein % in Lua 5.0
+  local s = math.floor(math.mod(sec, 60))
   return string.format("%02d:%02d", m, s)
 end
 
 local function IT_EnsureDB()
   if type(InstanceTrackerDB) ~= "table" then InstanceTrackerDB = {} end
   InstanceTrackerDB.entries = InstanceTrackerDB.entries or {}
-  InstanceTrackerDB.btn     = InstanceTrackerDB.btn     or {}
+  InstanceTrackerDB.btn = InstanceTrackerDB.btn or {}
   if InstanceTrackerDB.btn.shown == nil then
     InstanceTrackerDB.btn.shown = true
   end
   InstanceTrackerDB.lastSession = InstanceTrackerDB.lastSession or 0
+  if InstanceTrackerDB.lastSubZone == nil then
+    InstanceTrackerDB.lastSubZone = ""
+  end
 end
 
 local function pruneExpired()
@@ -98,6 +74,7 @@ local function pruneExpired()
   local src = InstanceTrackerDB.entries
   local keep = {}
   local n = tlen(src)
+  local i
   for i = 1, n do
     local e = src[i]
     if e and (e.expires or 0) > t then
@@ -107,30 +84,19 @@ local function pruneExpired()
   InstanceTrackerDB.entries = keep
 end
 
-local function isFiveManDungeon(zone)
-  if not zone then return false end
-  local z = string.lower(zone)
-  return DUNGEONS[z] == true
+-- Liefert den Anzeigenamen fuer die Instanz-Liste oder nil
+local function getInstanceDisplayName(subZone)
+  if not subZone or subZone == "" then return nil end
+  return INSTANCE_SUBZONES[string.lower(subZone)]
 end
 
-local function handleZoneEdge()
-  local zone = GetRealZoneText()
-  local nowIn = isFiveManDungeon(zone)
-
-  if not IT_Initialized then
-    -- Erster Aufruf nach Login/Reload: nur Grundzustand setzen
-    IT_WasInDungeon = nowIn
-    IT_Initialized = true
-    return
+local function saveCurrentSubZone()
+  local sz = GetSubZoneText()
+  if sz then
+    InstanceTrackerDB.lastSubZone = sz
+  else
+    InstanceTrackerDB.lastSubZone = ""
   end
-
-  if (not IT_WasInDungeon) and nowIn then
-    -- Kante: rein in 5er → HIER fragen/triggern
-    tryDetectInstanceEntry(true)   -- oder dein Startpfad, der die 60-Min-ID anlegt
-  end
-
-  -- Zustand für nächstes Mal merken
-  IT_WasInDungeon = nowIn
 end
 
 local function canStartAnother()
@@ -141,225 +107,334 @@ end
 local function addEntry(zone)
   pruneExpired()
   if not canStartAnother() then
-    DEFAULT_CHAT_FRAME:AddMessage("|cffff5555"..ADDON_NAME.."|r: Bereits 5 IDs aktiv. Warte bis eine ablaeuft.")
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff5555"..ADDON_NAME.."|r: Already 5 IDs active. Wait until one expires.")
     return
   end
   local t = now()
   local entry = { zone = zone or "Unknown", entered = t, expires = t + TRACK_DURATION }
   table.insert(InstanceTrackerDB.entries, entry)
-  DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: Neue ID gestartet fuer |cffffff00"..entry.zone.."|r (60:00).")
+  DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: New ID started for |cffffff00"..entry.zone.."|r (60:00).")
+end
+
+-- Entfernt Eintrag an 1-basiertem Index (1..5)
+local function removeEntryByIndex(idx)
+  pruneExpired()
+  local entries = InstanceTrackerDB.entries
+  local n = tlen(entries)
+  if idx < 1 or idx > n then
+    return false
+  end
+  table.remove(entries, idx)
+  return true
 end
 
 -- =======================
--- Bestätigungs-Popup + Suppression
+-- Ladebildschirm-Logik: SubZone vorher/nachher vergleichen
+-- GetSubZoneText() liefert nach Ladebildschirm oft erst nach kurzer Zeit
+-- die neue SubZone, daher verzögerte Prüfung (1 Sekunde).
 -- =======================
-IT_CONFIRM = IT_CONFIRM or { active = false, zone = nil, stamp = 0 }
-local IT_SUPPRESS = { zone = nil, untilTs = 0 } -- nach Abbruch kurz nicht erneut fragen
+local IT_LoadScreenDelayer = nil
 
-StaticPopupDialogs = StaticPopupDialogs or {}
-StaticPopupDialogs["INSTANCE_TRACKER_CONFIRM"] = {
-  text = "InstanceTracker:\nNeue Instanz-ID fuer \"%s\" starten?",
-  button1 = "Ja",
-  button2 = "Nein",
+local function onAfterLoadingScreen()
+  if not IT_LoadScreenDelayer then
+    IT_LoadScreenDelayer = CreateFrame("Frame")
+    IT_LoadScreenDelayer.t = 0
+    IT_LoadScreenDelayer:SetScript("OnUpdate", function()
+      local elapsed = arg1
+      this.t = this.t + elapsed
+      if this.t >= 1.0 then
+        this:Hide()
+        this.t = 0
+        local newSub = GetSubZoneText()
+        if not newSub then newSub = "" end
+        local oldSub = InstanceTrackerDB.lastSubZone or ""
 
-  OnAccept = function()
-    if IT_CONFIRM and IT_CONFIRM.zone then
-      addEntry(IT_CONFIRM.zone)
-      -- Debounce erst nach Bestätigung setzen
-      IT_LAST_STAMP = now()
-      IT_LAST_ZONE  = IT_CONFIRM.zone
-    end
-    IT_CONFIRM.active = false
-    IT_CONFIRM.zone = nil
-  end,
+        InstanceTrackerDB.lastSubZone = newSub
 
-  OnCancel = function()
-    -- 5s Unterdrückung für die gleiche Zone
-    if IT_CONFIRM and IT_CONFIRM.zone then
-      IT_SUPPRESS.zone = IT_CONFIRM.zone
-      IT_SUPPRESS.untilTs = now() + 5
-    end
-    IT_CONFIRM.active = false
-    IT_CONFIRM.zone = nil
-  end,
+        local displayName = getInstanceDisplayName(newSub)
+        if newSub ~= oldSub and displayName then
+          addEntry(displayName)
+        end
+      end
+    end)
+  end
+  IT_LoadScreenDelayer.t = 0
+  IT_LoadScreenDelayer:Show()
+end
 
-  timeout = 0,
-  whileDead = 1,
-  hideOnEscape = 1,
-  showAlert = 1,
-}
+-- Bei jedem SubZone-Wechsel (Zone-Event) speichern
+local function onSubZoneChange()
+  saveCurrentSubZone()
+end
 
 -- =======================
--- Instance detection (nur via Loadscreen)
+-- Floating Button + List-Frame (bleibt bei Maus auf Frame)
 -- =======================
-local IT_LAST_ZONE = nil
-local IT_LAST_STAMP = 0
+local hideListTimer = nil
+local listFrame = nil
 
-function tryDetectInstanceEntry(viaLoadscreen)
-  local zone = GetRealZoneText()
-  if not zone then return end
-
-  -- Unterdrückung aktiv?
-  if IT_SUPPRESS.zone == zone and now() < IT_SUPPRESS.untilTs then
-    return
-  end
-
-  if not isFiveManDungeon(zone) then
-    IT_LAST_ZONE = nil
-    return
-  end
-
-  if not viaLoadscreen then
-    -- Vorhof/Subzonen ignorieren
-    return
-  end
-
+local function IT_RefreshListFrame()
+  if not listFrame or not listFrame.lines then return end
+  IT_EnsureDB()
+  pruneExpired()
+  local entries = InstanceTrackerDB.entries
   local t = now()
-  local isNew = (IT_LAST_ZONE ~= zone) or (t - IT_LAST_STAMP > 120)
-  if not isNew then
-    return
+  local used = tlen(entries)
+  local i
+  for i = 1, MAX_TIMERS do
+    local line = listFrame.lines[i]
+    if line then
+      local text = line.text
+      local btn = line.btn
+      if i <= used then
+        local e = entries[i]
+        text:SetText(string.format("%d) %s  %s", i, e.zone or "?", format_mmss(e.expires - t)))
+        text:Show()
+        if btn then
+          btn:Show()
+          btn.entryIndex = i
+        end
+      else
+        text:Hide()
+        if btn then btn:Hide() end
+      end
+    end
   end
-
-  if not canStartAnother() then
-    DEFAULT_CHAT_FRAME:AddMessage("|cffff5555"..ADDON_NAME.."|r: 5/5 IDs aktiv - kein neuer Timer.")
-    return
+  if listFrame.header then
+    listFrame.header:SetText(string.format("IDs: %d / %d", used, MAX_TIMERS))
   end
-
-  -- Popup zeigen (nicht sofort starten)
-  if not IT_CONFIRM.active then
-    IT_CONFIRM.active = true
-    IT_CONFIRM.zone = zone
-    IT_CONFIRM.stamp = t
-    StaticPopup_Show("INSTANCE_TRACKER_CONFIRM", zone)
+  if listFrame.emptyLabel then
+    if used == 0 then
+      listFrame.emptyLabel:Show()
+    else
+      listFrame.emptyLabel:Hide()
+    end
   end
 end
 
--- ========= Floating Button (statt Minimap) =========
--- SavedVariables: Position & Sichtbarkeit
-InstanceTrackerDB = InstanceTrackerDB or {}
-InstanceTrackerDB.btn = InstanceTrackerDB.btn or { shown = true }
-
-local function IT_SaveButtonPosition(btn)
-  local point, relativeTo, relativePoint, x, y = btn:GetPoint(1)
-  InstanceTrackerDB.btn.point = point or "CENTER"
-  InstanceTrackerDB.btn.relativePoint = relativePoint or "CENTER"
-  InstanceTrackerDB.btn.x = x or 0
-  InstanceTrackerDB.btn.y = y or 0
+local function IT_ShowListFrame(anchor)
+  if not listFrame then return end
+  listFrame:ClearAllPoints()
+  listFrame:SetPoint("LEFT", anchor, "RIGHT", -4, 0)
+  listFrame:Show()
+  IT_RefreshListFrame()
+  if hideListTimer then
+    hideListTimer:Hide()
+    hideListTimer = nil
+  end
 end
 
-local function IT_RestoreButtonPosition(btn)
-  local bp = InstanceTrackerDB.btn
-  btn:ClearAllPoints()
-  if bp and bp.point and bp.relativePoint and bp.x and bp.y then
-    btn:SetPoint(bp.point, UIParent, bp.relativePoint, bp.x, bp.y)
-  else
-    btn:SetPoint("CENTER", UIParent, "CENTER", 0, -120)
+-- Prueft, ob die Maus ueber unserem List-Frame oder dem IT-Button-Container (inkl. "Entfernen") ist
+local function IT_IsMouseOverOurFrames()
+  local mf = GetMouseFocus()
+  if not mf then return false end
+  local f = mf
+  while f do
+    if f == listFrame or f == InstanceTrackerFloatingButton then
+      return true
+    end
+    f = f:GetParent()
+  end
+  return false
+end
+
+local function IT_HideListFrameDelayed()
+  if hideListTimer then return end
+  hideListTimer = CreateFrame("Frame")
+  hideListTimer:SetScript("OnUpdate", function()
+    local elapsed = arg1
+    hideListTimer.t = (hideListTimer.t or 0) + elapsed
+    if hideListTimer.t >= 0.25 then
+      hideListTimer:Hide()
+      hideListTimer.t = nil
+      hideListTimer = nil
+      if listFrame and not IT_IsMouseOverOurFrames() then
+        listFrame:Hide()
+      end
+    end
+  end)
+  hideListTimer:Show()
+end
+
+local function IT_CancelHideList()
+  if hideListTimer then
+    hideListTimer:Hide()
+    hideListTimer.t = nil
+    hideListTimer = nil
   end
 end
 
 function InstanceTracker_RecreateFloatingButton()
   IT_EnsureDB()
-  -- Clean up, falls vorhanden
   if InstanceTrackerFloatingButton then
     InstanceTrackerFloatingButton:Hide()
     InstanceTrackerFloatingButton:SetParent(nil)
     InstanceTrackerFloatingButton = nil
   end
+  if listFrame then
+    listFrame:Hide()
+    listFrame:SetParent(nil)
+    listFrame = nil
+  end
 
-  local btn = CreateFrame("Button", "InstanceTrackerFloatingButton", UIParent)
-  btn:SetWidth(40); btn:SetHeight(40)
+  local container = CreateFrame("Frame", "InstanceTrackerFloatingButton", UIParent)
+  container:SetWidth(40)
+  container:SetHeight(40)
+  container:EnableMouse(true)
+  container:SetFrameStrata("DIALOG")
+  container:SetFrameLevel(50)
+
+  local btn = CreateFrame("Button", nil, container)
+  btn:SetWidth(40)
+  btn:SetHeight(40)
+  btn:SetPoint("LEFT", container, "LEFT", 0, 0)
   btn:EnableMouse(true)
-  btn:SetMovable(true)
-  btn:RegisterForDrag("LeftButton")
-  btn:SetFrameStrata("DIALOG")
-  btn:SetFrameLevel(50)
-  btn:Show()
+  btn:SetMovable(false)
 
-  -- Sichtbare Optik ohne eigene Assets
   local bg = btn:CreateTexture(nil, "BACKGROUND")
   bg:SetAllPoints(btn)
   bg:SetTexture(0, 0, 0, 0.5)
 
-  -- Icon (20x20, zentriert, leicht beschnitten)
   local icon = btn:CreateTexture(nil, "ARTWORK")
   icon:SetTexture("Interface\\Icons\\INV_Misc_PocketWatch_01")
   icon:SetTexCoord(0.06, 0.94, 0.06, 0.94)
-  icon:SetWidth(40); icon:SetHeight(40)
+  icon:SetWidth(40)
+  icon:SetHeight(40)
   icon:SetPoint("CENTER", btn, "CENTER", 0, 0)
-  btn.icon = icon
 
-  -- Highlight beim Hovern
   local hl = btn:CreateTexture(nil, "HIGHLIGHT")
   hl:SetTexture("Interface\\Buttons\\ButtonHilight-Square")
   hl:SetBlendMode("ADD")
   hl:SetAllPoints(icon)
+
   local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
   fs:SetPoint("CENTER", 0, 0)
   fs:SetText("IT")
 
-  -- Drag-Handler (1.12: 'this' statt self)
-  btn:SetScript("OnDragStart", function() this:StartMoving() end)
-  btn:SetScript("OnDragStop",  function() this:StopMovingOrSizing(); IT_SaveButtonPosition(this) end)
-
-  -- Tooltip
-  btn:SetScript("OnEnter", function()
-    IT_EnsureDB()
-    GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
-    GameTooltip:SetText("InstanceTracker", 1, 1, 1)
-
-    pruneExpired()
-    table.sort(InstanceTrackerDB.entries, function(a, b)
-      return (a.expires - now()) < (b.expires - now())
-    end)
-
-    local used = table.getn(InstanceTrackerDB.entries)
-    local free = MAX_TIMERS - used
-    GameTooltip:AddLine(string.format("IDs benutzt: %d / %d", used, MAX_TIMERS))
-
-    if used == 0 then
-      GameTooltip:AddLine("Keine aktiven Instanz-IDs.", 0.8, 0.8, 0.8)
-    else
-      local t = now()
-      for i = 1, used do
-        local e = InstanceTrackerDB.entries[i]
-        GameTooltip:AddDoubleLine(
-          string.format("%d) %s", i, e.zone or "?"),
-          format_mmss(e.expires - t),
-          0.9, 0.9, 0.9,  1, 1, 0.2
-        )
-      end
-    end
-    if free > 0 then
-      GameTooltip:AddLine(" ")
-      GameTooltip:AddLine(string.format("%d weitere(r) Eintritt(e) moeglich.", free))
-    end
-    GameTooltip:Show()
+  container:SetMovable(true)
+  container:RegisterForDrag("LeftButton")
+  container:SetScript("OnDragStart", function()
+    this:StartMoving()
+  end)
+  container:SetScript("OnDragStop", function()
+    this:StopMovingOrSizing()
+    local bp = InstanceTrackerDB.btn
+    local point, _, relativePoint, x, y = this:GetPoint(1)
+    bp.point = point or "CENTER"
+    bp.relativePoint = relativePoint or "CENTER"
+    bp.x = x or 0
+    bp.y = y or 0
   end)
 
-  btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  btn:SetScript("OnEnter", function()
+    IT_ShowListFrame(container)
+  end)
+  btn:SetScript("OnLeave", function()
+    IT_HideListFrameDelayed()
+  end)
 
-  -- Click (1.12: Buttonname in 'arg1')
+  -- List-Frame (bleibt sichtbar, wenn Maus von Button auf Frame wechselt)
+  listFrame = CreateFrame("Frame", nil, UIParent)
+  listFrame:SetFrameStrata("DIALOG")
+  listFrame:SetFrameLevel(51)
+  listFrame:SetWidth(208)
+  listFrame:SetHeight(120)
+  listFrame:EnableMouse(true)
+  listFrame:SetBackdrop({
+    bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true,
+    tileSize = 16,
+    edgeSize = 16,
+    insets = { left = 4, right = 4, top = 4, bottom = 4 }
+  })
+  listFrame:SetBackdropColor(0, 0, 0, 0.85)
+  listFrame:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
+
+  listFrame:SetScript("OnEnter", function()
+    IT_CancelHideList()
+  end)
+  listFrame:SetScript("OnLeave", function()
+    IT_HideListFrameDelayed()
+  end)
+
+  local header = listFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  header:SetPoint("TOPLEFT", listFrame, "TOPLEFT", 8, -8)
+  header:SetText("IDs: 0 / " .. MAX_TIMERS)
+  listFrame.header = header
+
+  local emptyLabel = listFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  emptyLabel:SetPoint("CENTER", listFrame, "CENTER", 0, 0)
+  emptyLabel:SetText("No active dungeon IDs")
+  emptyLabel:SetTextColor(0.7, 0.7, 0.7)
+  listFrame.emptyLabel = emptyLabel
+
+  listFrame.lines = {}
+  local prev
+  local rowWidth = 202
+  for i = 1, MAX_TIMERS do
+    local row = CreateFrame("Frame", nil, listFrame)
+    row:SetWidth(rowWidth)
+    row:SetHeight(18)
+    if i == 1 then
+      row:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -4)
+    else
+      row:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, 0)
+    end
+    prev = row
+
+    local text = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    text:SetPoint("LEFT", row, "LEFT", 0, 0)
+    text:SetWidth(rowWidth - 70)
+    text:SetJustifyH("LEFT")
+    text:SetTextColor(0.9, 0.9, 0.9)
+
+    local remBtn = CreateFrame("Button", nil, row)
+    remBtn:SetWidth(60)
+    remBtn:SetHeight(16)
+    remBtn:SetPoint("RIGHT", row, "RIGHT", 0, 0)
+    local btnLabel = remBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    btnLabel:SetPoint("CENTER", remBtn, "CENTER", 0, 0)
+    btnLabel:SetText("Remove")
+    btnLabel:SetTextColor(1, 0.4, 0.4)
+    remBtn.entryIndex = i
+    remBtn:SetScript("OnClick", function()
+      local idx = this.entryIndex
+      if removeEntryByIndex(idx) then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: ID "..idx.." removed.")
+        IT_RefreshListFrame()
+      end
+    end)
+    listFrame.lines[i] = { text = text, btn = remBtn }
+  end
+
+  listFrame:Hide()
+
+  -- Button-Klick (links/rechts)
   btn:SetScript("OnClick", function()
     IT_EnsureDB()
-    if arg1 == "RightButton" then
-      local before = table.getn(InstanceTrackerDB.entries)
+    local a1 = arg1
+    if a1 == "RightButton" then
+      local before = tlen(InstanceTrackerDB.entries)
       pruneExpired()
-      local after = table.getn(InstanceTrackerDB.entries)
-      DEFAULT_CHAT_FRAME:AddMessage(string.format("|cff00ff00%s|r: Aufgeraeumt (%d -> %d).", ADDON_NAME, before, after))
+      local after = tlen(InstanceTrackerDB.entries)
+      DEFAULT_CHAT_FRAME:AddMessage(string.format("|cff00ff00%s|r: Cleaned up (%d -> %d).", ADDON_NAME, before, after))
+      IT_RefreshListFrame()
     else
       pruneExpired()
-      if table.getn(InstanceTrackerDB.entries) == 0 then
-        DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r: Keine aktiven IDs.")
+      if tlen(InstanceTrackerDB.entries) == 0 then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r: No active IDs.")
       else
-        DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r: Aktive IDs:")
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r: Active IDs:")
         table.sort(InstanceTrackerDB.entries, function(a, b)
           return (a.expires - now()) < (b.expires - now())
         end)
         local t = now()
-        for i = 1, table.getn(InstanceTrackerDB.entries) do
+        local i
+        for i = 1, tlen(InstanceTrackerDB.entries) do
           local e = InstanceTrackerDB.entries[i]
           DEFAULT_CHAT_FRAME:AddMessage(string.format(
-            "  %d) %s - %s verbleibend",
+            "  %d) %s - %s remaining",
             i, e.zone or "?", format_mmss(e.expires - t)
           ))
         end
@@ -368,68 +443,92 @@ function InstanceTracker_RecreateFloatingButton()
   end)
 
   -- Position wiederherstellen
-  IT_RestoreButtonPosition(btn)
+  local bp = InstanceTrackerDB.btn
+  container:ClearAllPoints()
+  if bp and bp.point and bp.relativePoint and bp.x and bp.y then
+    container:SetPoint(bp.point, UIParent, bp.relativePoint, bp.x, bp.y)
+  else
+    container:SetPoint("CENTER", UIParent, "CENTER", 0, -120)
+  end
 
-  -- Sichtbarkeit anwenden
   if InstanceTrackerDB.btn.shown == false then
-    btn:Hide()
+    container:Hide()
+  else
+    container:Show()
   end
 end
 
--- Alias, falls an anderer Stelle aufgerufen wird
-local function createMinimapButton()
-  InstanceTracker_RecreateFloatingButton()
-end
-
 -- =======================
--- Slash-Commands
+-- Slash-Commands: /it und /tt (remove 1-5)
 -- =======================
 SLASH_INSTANCETRACKER1 = "/it"
-SLASH_INSTANCETRACKER2 = "/instancetracker"  -- optional
+SLASH_INSTANCETRACKER2 = "/instancetracker"
+SLASH_INSTANCETRACKER3 = "/tt"
 
 SlashCmdList["INSTANCETRACKER"] = function(msg)
   IT_EnsureDB()
-  local cmd = string.lower(msg or "")
+  local m = msg or ""
+  local _, _, cmd, rest = string.find(m, "^(%S+)%s*(.*)$")
+  cmd = string.lower(cmd or m or "")
+  rest = string.lower(rest or "")
+
+  if cmd == "remove" then
+    local num = tonumber(rest)
+    if num and num >= 1 and num <= 5 then
+      if removeEntryByIndex(num) then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: ID "..num.." entfernt.")
+        if listFrame then IT_RefreshListFrame() end
+      else
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff5555"..ADDON_NAME.."|r: No ID at position "..num..".")
+      end
+    else
+      DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r: /it remove <1-5>")
+    end
+    return
+  end
 
   if cmd == "clear" or cmd == "reset" then
     InstanceTrackerDB.entries = {}
-    DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: Alle Eintraege geloescht.")
+    DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: All entries cleared.")
+    if listFrame then IT_RefreshListFrame() end
 
   elseif cmd == "show" or cmd == "button" then
     InstanceTrackerDB.btn.shown = true
     InstanceTracker_RecreateFloatingButton()
-    DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: Floating-Button erstellt/angezeigt. Mit linker Maustaste ziehen.")
+    DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: Button created/shown. Drag with left mouse button.")
 
   elseif cmd == "hide" then
     InstanceTrackerDB.btn.shown = false
     if InstanceTrackerFloatingButton then InstanceTrackerFloatingButton:Hide() end
-    DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r: Floating-Button ausgeblendet.")
+    if listFrame then listFrame:Hide() end
+    DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r: Button hidden.")
 
   elseif cmd == "resetbtn" then
     InstanceTrackerDB.btn = { shown = true }
     InstanceTracker_RecreateFloatingButton()
-    DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: Floating-Button Position zurueckgesetzt.")
+    DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: Button position reset.")
 
   elseif cmd == "list" or cmd == "" then
     pruneExpired()
     if tlen(InstanceTrackerDB.entries) == 0 then
-      DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r: Keine aktiven IDs.")
+      DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r: No active IDs.")
       return
     end
-    DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r: Aktive IDs:")
+    DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r: Active IDs:")
     table.sort(InstanceTrackerDB.entries, function(a, b)
       return (a.expires - now()) < (b.expires - now())
     end)
     local t = now()
+    local i
     for i = 1, tlen(InstanceTrackerDB.entries) do
       local e = InstanceTrackerDB.entries[i]
       DEFAULT_CHAT_FRAME:AddMessage(string.format(
-        "  %d) %s - %s verbleibend", i, e.zone or "?", format_mmss(e.expires - t)
+        "  %d) %s - %s remaining", i, e.zone or "?", format_mmss(e.expires - t)
       ))
     end
 
   else
-    DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r Befehle: /it, /it list, /it clear, /it show, /it hide, /it resetbtn")
+    DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r Commands: /it [list], /it remove <1-5>, /it clear, /it show, /it hide, /it resetbtn")
   end
 end
 
@@ -437,32 +536,25 @@ end
 -- Events
 -- =======================
 frame:SetScript("OnEvent", function()
-  if event == "VARIABLES_LOADED" or event == "PLAYER_LOGIN" then
+  local evt = event
+  local a1 = arg1
+
+  if evt == "VARIABLES_LOADED" or evt == "PLAYER_LOGIN" then
     IT_EnsureDB()
     pruneExpired()
-    createMinimapButton()
+    InstanceTracker_RecreateFloatingButton()
+    saveCurrentSubZone()
 
-  elseif event == "PLAYER_ENTERING_WORLD" then
-    handleZoneEdge()
-	pruneExpired()
-    tryDetectInstanceEntry(true)   -- echter Eintritt (Ladebildschirm)
-    -- Verzögerte Zweitprüfung: OHNE Startflag!
-    if not IT_Delayer then
-      IT_Delayer = CreateFrame("Frame"); IT_Delayer:Hide(); IT_Delayer.t = 0
-      IT_Delayer:SetScript("OnUpdate", function()
-        IT_Delayer.t = IT_Delayer.t + arg1
-        if IT_Delayer.t >= 0.5 then
-          IT_Delayer:Hide()
-          IT_Delayer.t = 0
-          tryDetectInstanceEntry(false) -- wichtig: false, damit kein Start nach Abbruch erfolgt
-        end
-      end)
+  elseif evt == "PLAYER_ENTERING_WORLD" then
+    pruneExpired()
+    if not IT_Initialized then
+      IT_Initialized = true
+      saveCurrentSubZone()
+    else
+      onAfterLoadingScreen()
     end
-    IT_Delayer:Show()
 
-  elseif event == "ZONE_CHANGED_NEW_AREA" then
-    handleZoneEdge()
-	-- Nur Status/Debug, nie Start
-    tryDetectInstanceEntry(false)
+  elseif evt == "ZONE_CHANGED_NEW_AREA" then
+    onSubZoneChange()
   end
 end)
