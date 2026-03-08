@@ -1,6 +1,5 @@
 -- InstanceTracker.lua - WoW 1.12 (Lua 5.0) compatible
--- SubZone-basierte Erkennung: Neue ID automatisch nach Ladebildschirm
--- wenn SubZone sich aendert und in der Instanz-SubZone-Liste steht.
+-- Erkennung per IsInInstance(): Wechsel von nil auf 1 nach Ladebildschirm = Instanz betreten, neue ID.
 
 -- =======================
 -- Config
@@ -10,22 +9,13 @@ local TRACK_DURATION = 60 * 60
 local MAX_TIMERS = 5
 local IT_Initialized = false
 
--- Instanz-SubZones: SubZone (GetSubZoneText) -> Anzeigename in der Liste
--- addSubZone("SubZone-Name", "Anzeige als") - z.B. "Warpwood Quarter" -> "Dire Maul"
-local INSTANCE_SUBZONES = {}
-local function addSubZone(subZone, displayName)
-  INSTANCE_SUBZONES[string.lower(subZone)] = displayName or subZone
-end
-addSubZone("Warpwood Quarter", "Dire Maul")
-addSubZone("Stratholme", "Stratholme")
-
 -- =======================
 -- SavedVariables
 -- =======================
 InstanceTrackerDB = InstanceTrackerDB or {
   entries = {},
   lastSession = 0,
-  lastSubZone = "",
+  lastInInstance = nil,
   btn = {},
 }
 
@@ -63,10 +53,10 @@ local function IT_EnsureDB()
   if InstanceTrackerDB.btn.shown == nil then
     InstanceTrackerDB.btn.shown = true
   end
-  InstanceTrackerDB.lastSession = InstanceTrackerDB.lastSession or 0
-  if InstanceTrackerDB.lastSubZone == nil then
-    InstanceTrackerDB.lastSubZone = ""
+  if InstanceTrackerDB.btn.locked == nil then
+    InstanceTrackerDB.btn.locked = true
   end
+  InstanceTrackerDB.lastSession = InstanceTrackerDB.lastSession or 0
 end
 
 local function pruneExpired()
@@ -84,18 +74,11 @@ local function pruneExpired()
   InstanceTrackerDB.entries = keep
 end
 
--- Liefert den Anzeigenamen fuer die Instanz-Liste oder nil
-local function getInstanceDisplayName(subZone)
-  if not subZone or subZone == "" then return nil end
-  return INSTANCE_SUBZONES[string.lower(subZone)]
-end
-
-local function saveCurrentSubZone()
-  local sz = GetSubZoneText()
-  if sz then
-    InstanceTrackerDB.lastSubZone = sz
+local function saveCurrentInInstance()
+  if IsInInstance() == 1 then
+    InstanceTrackerDB.lastInInstance = 1
   else
-    InstanceTrackerDB.lastSubZone = ""
+    InstanceTrackerDB.lastInInstance = nil
   end
 end
 
@@ -129,9 +112,7 @@ local function removeEntryByIndex(idx)
 end
 
 -- =======================
--- Ladebildschirm-Logik: SubZone vorher/nachher vergleichen
--- GetSubZoneText() liefert nach Ladebildschirm oft erst nach kurzer Zeit
--- die neue SubZone, daher verzögerte Prüfung (1 Sekunde).
+-- Ladebildschirm-Logik: IsInInstance() von nicht-1 auf 1 = Instanz betreten
 -- =======================
 local IT_LoadScreenDelayer = nil
 
@@ -145,26 +126,27 @@ local function onAfterLoadingScreen()
       if this.t >= 1.0 then
         this:Hide()
         this.t = 0
-        local newSub = GetSubZoneText()
-        if not newSub then newSub = "" end
-        local oldSub = InstanceTrackerDB.lastSubZone or ""
-
-        InstanceTrackerDB.lastSubZone = newSub
-
-        local displayName = getInstanceDisplayName(newSub)
-        if newSub ~= oldSub and displayName then
-          addEntry(displayName)
+        local newIn = IsInInstance()
+        local oldIn = this.savedOldInInstance
+        if oldIn ~= 1 and newIn == 1 then
+          local zoneName = GetRealZoneText() or "Unknown"
+          addEntry(zoneName)
+        end
+        if newIn == 1 then
+          InstanceTrackerDB.lastInInstance = 1
+        else
+          InstanceTrackerDB.lastInInstance = nil
         end
       end
     end)
   end
+  IT_LoadScreenDelayer.savedOldInInstance = InstanceTrackerDB.lastInInstance
   IT_LoadScreenDelayer.t = 0
   IT_LoadScreenDelayer:Show()
 end
 
--- Bei jedem SubZone-Wechsel (Zone-Event) speichern
-local function onSubZoneChange()
-  saveCurrentSubZone()
+local function onZoneChange()
+  saveCurrentInInstance()
 end
 
 -- =======================
@@ -188,7 +170,7 @@ local function IT_RefreshListFrame()
       local btn = line.btn
       if i <= used then
         local e = entries[i]
-        text:SetText(string.format("%d) %s  %s", i, e.zone or "?", format_mmss(e.expires - t)))
+        text:SetText(string.format("%d) %s  |cFFFFFF00%s|r", i, e.zone or "?", format_mmss(e.expires - t)))
         text:Show()
         if btn then
           btn:Show()
@@ -290,6 +272,20 @@ function InstanceTracker_RecreateFloatingButton()
   btn:SetPoint("LEFT", container, "LEFT", 0, 0)
   btn:EnableMouse(true)
   btn:SetMovable(false)
+  btn:RegisterForDrag("LeftButton")
+  btn:SetScript("OnDragStart", function()
+    if InstanceTrackerDB.btn.locked then return end
+    container:StartMoving()
+  end)
+  btn:SetScript("OnDragStop", function()
+    container:StopMovingOrSizing()
+    local bp = InstanceTrackerDB.btn
+    local point, _, relativePoint, x, y = container:GetPoint(1)
+    bp.point = point or "CENTER"
+    bp.relativePoint = relativePoint or "CENTER"
+    bp.x = x or 0
+    bp.y = y or 0
+  end)
 
   local bg = btn:CreateTexture(nil, "BACKGROUND")
   bg:SetAllPoints(btn)
@@ -312,19 +308,6 @@ function InstanceTracker_RecreateFloatingButton()
   fs:SetText("IT")
 
   container:SetMovable(true)
-  container:RegisterForDrag("LeftButton")
-  container:SetScript("OnDragStart", function()
-    this:StartMoving()
-  end)
-  container:SetScript("OnDragStop", function()
-    this:StopMovingOrSizing()
-    local bp = InstanceTrackerDB.btn
-    local point, _, relativePoint, x, y = this:GetPoint(1)
-    bp.point = point or "CENTER"
-    bp.relativePoint = relativePoint or "CENTER"
-    bp.x = x or 0
-    bp.y = y or 0
-  end)
 
   btn:SetScript("OnEnter", function()
     IT_ShowListFrame(container)
@@ -504,9 +487,17 @@ SlashCmdList["INSTANCETRACKER"] = function(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r: Button hidden.")
 
   elseif cmd == "resetbtn" then
-    InstanceTrackerDB.btn = { shown = true }
+    InstanceTrackerDB.btn = { shown = true, locked = InstanceTrackerDB.btn.locked }
     InstanceTracker_RecreateFloatingButton()
     DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: Button position reset.")
+
+  elseif cmd == "unlock" then
+    InstanceTrackerDB.btn.locked = false
+    DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: Button unlocked. You can drag it to move.")
+
+  elseif cmd == "lock" then
+    InstanceTrackerDB.btn.locked = true
+    DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r: Button locked.")
 
   elseif cmd == "list" or cmd == "" then
     pruneExpired()
@@ -528,7 +519,7 @@ SlashCmdList["INSTANCETRACKER"] = function(msg)
     end
 
   else
-    DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r Commands: /it [list], /it remove <1-5>, /it clear, /it show, /it hide, /it resetbtn")
+    DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r Commands: /it [list], /it remove <1-5>, /it clear, /it show, /it hide, /it unlock, /it lock, /it resetbtn")
   end
 end
 
@@ -543,18 +534,18 @@ frame:SetScript("OnEvent", function()
     IT_EnsureDB()
     pruneExpired()
     InstanceTracker_RecreateFloatingButton()
-    saveCurrentSubZone()
+    saveCurrentInInstance()
 
   elseif evt == "PLAYER_ENTERING_WORLD" then
     pruneExpired()
     if not IT_Initialized then
       IT_Initialized = true
-      saveCurrentSubZone()
+      saveCurrentInInstance()
     else
       onAfterLoadingScreen()
     end
 
   elseif evt == "ZONE_CHANGED_NEW_AREA" then
-    onSubZoneChange()
+    onZoneChange()
   end
 end)
