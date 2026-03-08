@@ -10,8 +10,7 @@ Commands:<br>
 /it list - Shows active IDs in the chat <br>
 /it resetbtn - Resets the button <br>
 <br>
-<br>
-You can use the minimap button or show an extra button ingame with mouseover function to remove accidentally started IDs and see your currently IDs
+You can use the minimap button or show an extra button ingame with mouseover function to remove accidentally started IDs and see your current IDs <br>
 <br>
 Statistics: If you left mouse-button click the minimap button you will open a window with the counter of every instance you've done since this addon is installed.
 <br>
