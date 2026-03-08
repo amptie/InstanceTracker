@@ -102,12 +102,16 @@ local function addEntry(zone)
     return
   end
   local t = now()
-  local entry = { zone = zone or "Unknown", entered = t, expires = t + TRACK_DURATION }
+  local zoneName = zone or "Unknown"
+  local entry = { zone = zoneName, entered = t, expires = t + TRACK_DURATION }
   table.insert(InstanceTrackerDB.entries, entry)
+  IT_EnsureDB()
+  local st = InstanceTrackerDB.stats
+  st[zoneName] = (st[zoneName] or 0) + 1
   DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: New ID started for |cffffff00"..entry.zone.."|r (60:00).")
 end
 
--- Entfernt Eintrag an 1-basiertem Index (1..5); zählt vorher einen Reset in der Statistik
+-- Entfernt Eintrag an 1-basiertem Index (1..5); zieht diese ID in der Statistik wieder ab
 local function removeEntryByIndex(idx)
   pruneExpired()
   local entries = InstanceTrackerDB.entries
@@ -120,7 +124,10 @@ local function removeEntryByIndex(idx)
   if zone and zone ~= "" then
     IT_EnsureDB()
     local st = InstanceTrackerDB.stats
-    st[zone] = (st[zone] or 0) + 1
+    st[zone] = (st[zone] or 0) - 1
+    if st[zone] <= 0 then
+      st[zone] = nil
+    end
   end
   table.remove(entries, idx)
   return true
