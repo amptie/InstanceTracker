@@ -11,7 +11,9 @@ Commands:<br>
 /it resetbtn - Resets the button <br>
 <br>
 <br>
-Mouseover the button and you will see the active IDs with the timers written in MM:SS<br>
+You can use the minimap button or show an extra button ingame with mouseover function to remove accidentally started IDs and see your currently IDs
+<br>
+Statistics: If you left mouse-button click the minimap button you will open a window with the counter of every instance you've done since this addon is installed.
 <br>
 <br>
 Dungeons IDs will be shown account-wide<br>
