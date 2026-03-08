@@ -17,6 +17,7 @@ InstanceTrackerDB = InstanceTrackerDB or {
   lastSession = 0,
   lastInInstance = nil,
   btn = {},
+  stats = {},  -- [zonename] = Anzahl Resets (dauerhaft, SavedVariables)
 }
 
 -- =======================
@@ -63,6 +64,7 @@ local function IT_EnsureDB()
     InstanceTrackerDB.btn.minimapShown = true
   end
   InstanceTrackerDB.lastSession = InstanceTrackerDB.lastSession or 0
+  InstanceTrackerDB.stats = InstanceTrackerDB.stats or {}
 end
 
 local function pruneExpired()
@@ -105,13 +107,20 @@ local function addEntry(zone)
   DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: New ID started for |cffffff00"..entry.zone.."|r (60:00).")
 end
 
--- Entfernt Eintrag an 1-basiertem Index (1..5)
+-- Entfernt Eintrag an 1-basiertem Index (1..5); zählt vorher einen Reset in der Statistik
 local function removeEntryByIndex(idx)
   pruneExpired()
   local entries = InstanceTrackerDB.entries
   local n = tlen(entries)
   if idx < 1 or idx > n then
     return false
+  end
+  local entry = entries[idx]
+  local zone = entry and entry.zone
+  if zone and zone ~= "" then
+    IT_EnsureDB()
+    local st = InstanceTrackerDB.stats
+    st[zone] = (st[zone] or 0) + 1
   end
   table.remove(entries, idx)
   return true
@@ -160,6 +169,7 @@ end
 -- =======================
 local hideListTimer = nil
 local listFrame = nil
+local statsFrame = nil
 
 local function IT_RefreshListFrame()
   if not listFrame or not listFrame.lines then return end
@@ -256,6 +266,116 @@ local function IT_CancelHideList()
   end
 end
 
+-- =======================
+-- Statistik-Fenster (Resets pro Instanz, sortiert nach Anzahl, Höhe wächst mit)
+-- =======================
+local STATS_MAX_LINES = 80
+local STATS_LINE_HEIGHT = 14
+local STATS_FRAME_WIDTH = 200
+local STATS_HEADER_HEIGHT = 24
+local STATS_PADDING_BOTTOM = 8
+
+local function IT_CreateStatsFrame()
+  if statsFrame then return end
+  IT_EnsureDB()
+  local sf = CreateFrame("Frame", "InstanceTrackerStatsFrame", UIParent)
+  sf:SetFrameStrata("DIALOG")
+  sf:SetFrameLevel(60)
+  sf:SetWidth(STATS_FRAME_WIDTH)
+  sf:SetHeight(STATS_HEADER_HEIGHT + STATS_PADDING_BOTTOM)
+  sf:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+  sf:EnableMouse(true)
+  sf:SetBackdrop({
+    bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true,
+    tileSize = 16,
+    edgeSize = 16,
+    insets = { left = 4, right = 4, top = 4, bottom = 4 }
+  })
+  sf:SetBackdropColor(0, 0, 0, 0.9)
+  sf:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
+
+  local title = sf:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  title:SetPoint("TOPLEFT", sf, "TOPLEFT", 6, -6)
+  title:SetText("|cff00ff00" .. ADDON_NAME .. "|r Statistics:")
+
+  local closeBtn = CreateFrame("Button", nil, sf)
+  closeBtn:SetWidth(20)
+  closeBtn:SetHeight(20)
+  closeBtn:SetPoint("TOPRIGHT", sf, "TOPRIGHT", -4, -2)
+  local closeTex = closeBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  closeTex:SetPoint("CENTER", closeBtn, "CENTER", 0, 0)
+  closeTex:SetText("X")
+  closeTex:SetTextColor(1, 0.3, 0.3)
+  closeBtn:SetScript("OnClick", function()
+    if this and this:GetParent() then
+      this:GetParent():Hide()
+    end
+  end)
+  closeBtn:SetScript("OnEnter", function()
+    if closeTex then closeTex:SetTextColor(1, 0.6, 0.6) end
+  end)
+  closeBtn:SetScript("OnLeave", function()
+    if closeTex then closeTex:SetTextColor(1, 0.3, 0.3) end
+  end)
+
+  sf.lines = {}
+  local prev = title
+  local i
+  for i = 1, STATS_MAX_LINES do
+    local line = sf:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    line:SetJustifyH("LEFT")
+    if i == 1 then
+      line:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
+    else
+      line:SetPoint("TOPLEFT", sf.lines[i - 1], "BOTTOMLEFT", 0, 0)
+    end
+    line:SetWidth(STATS_FRAME_WIDTH - 20)
+    line:SetHeight(STATS_LINE_HEIGHT)
+    line:SetTextColor(0.9, 0.9, 0.9)
+    sf.lines[i] = line
+  end
+  statsFrame = sf
+  sf:Hide()
+end
+
+local function IT_RefreshStatsFrame()
+  if not statsFrame then return end
+  IT_EnsureDB()
+  local st = InstanceTrackerDB.stats
+  local keys = {}
+  local z
+  for z in pairs(st) do
+    table.insert(keys, z)
+  end
+  -- Nach ID-Anzahl absteigend (meiste oben)
+  table.sort(keys, function(a, b) return (st[a] or 0) > (st[b] or 0) end)
+  local n = table.getn(keys)
+  local i, line
+  for i = 1, STATS_MAX_LINES do
+    line = statsFrame.lines[i]
+    if line then
+      if keys[i] then
+        line:SetText(keys[i] .. ": " .. st[keys[i]])
+        line:Show()
+      else
+        line:Hide()
+      end
+    end
+  end
+  -- Fensterhöhe an Anzahl Einträge anpassen (wächst nach unten)
+  local contentH = n * STATS_LINE_HEIGHT
+  if contentH < 0 then contentH = 0 end
+  statsFrame:SetHeight(STATS_HEADER_HEIGHT + contentH + STATS_PADDING_BOTTOM)
+end
+
+function IT_ShowStatsFrame()
+  IT_CreateStatsFrame()
+  IT_RefreshStatsFrame()
+  if statsFrame then statsFrame:Show() end
+end
+
 local MINIMAP_RADIUS = 78
 
 local function IT_UpdateMinimapButtonPosition()
@@ -300,9 +420,8 @@ function IT_CreateMinimapButton()
   icon:SetPoint("TOPLEFT", mb, "TOPLEFT", 7, -6)
 
   mb:SetScript("OnClick", function()
-    -- Leerer OnClick damit Minimap-Button-Arranger (z.B. pfUI addonbuttons) den Button als gültig erkennen
     if this.dragging then return end
-    IT_ShowListFrame(this)
+    IT_ShowStatsFrame()
   end)
   mb:SetScript("OnEnter", function()
     if this.dragging then return end
