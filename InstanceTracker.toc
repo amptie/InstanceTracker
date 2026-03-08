@@ -2,7 +2,8 @@
 ## Title: InstanceTracker
 ## Notes: Instance Tracker for Lockouts on 1.12
 ## Author: amptie
-## Version: 2.0
+## Version: 2.1
 ## SavedVariables: InstanceTrackerDB
 
 main.lua
+
