@@ -133,6 +133,100 @@ local function removeEntryByIndex(idx)
   return true
 end
 
+-- Bestätigungsdialog vor dem Entfernen einer ID
+local function IT_CreateRemoveConfirmDialog()
+  if confirmDialog then return end
+  IT_EnsureDB()
+  local d = CreateFrame("Frame", "InstanceTrackerRemoveConfirm", UIParent)
+  d:SetFrameStrata("DIALOG")
+  d:SetFrameLevel(70)
+  d:SetWidth(320)
+  d:SetHeight(100)
+  d:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+  d:EnableMouse(true)
+  d:SetBackdrop({
+    bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true,
+    tileSize = 16,
+    edgeSize = 16,
+    insets = { left = 4, right = 4, top = 4, bottom = 4 }
+  })
+  d:SetBackdropColor(0, 0, 0, 0.95)
+  d:SetBackdropBorderColor(0.6, 0.4, 0.2, 1)
+  d.pendingIndex = nil
+
+  local msg = d:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  msg:SetPoint("TOP", d, "TOP", 0, -10)
+  msg:SetWidth(300)
+  msg:SetJustifyH("CENTER")
+  msg:SetJustifyV("TOP")
+  d.msg = msg
+
+  local btnYes = CreateFrame("Button", nil, d)
+  btnYes:SetWidth(80)
+  btnYes:SetHeight(22)
+  btnYes:SetPoint("BOTTOMLEFT", d, "BOTTOM", -90, 24)
+  local lblYes = btnYes:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  lblYes:SetPoint("CENTER", btnYes, "CENTER", 0, 0)
+  lblYes:SetText("Yes")
+  lblYes:SetTextColor(0, 1, 0)
+  btnYes:SetScript("OnClick", function()
+    local idx = d.pendingIndex
+    d.pendingIndex = nil
+    d:Hide()
+    if idx and removeEntryByIndex(idx) then
+      DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: ID "..idx.." removed.")
+      if listFrame then IT_RefreshListFrame() end
+      if statsFrame and statsFrame:IsShown() then IT_RefreshStatsFrame() end
+    end
+  end)
+  btnYes:SetScript("OnEnter", function()
+    lblYes:SetTextColor(0.5, 1, 0.5)
+  end)
+  btnYes:SetScript("OnLeave", function()
+    lblYes:SetTextColor(0, 1, 0)
+  end)
+
+  local btnNo = CreateFrame("Button", nil, d)
+  btnNo:SetWidth(80)
+  btnNo:SetHeight(22)
+  btnNo:SetPoint("BOTTOMRIGHT", d, "BOTTOM", 90, 24)
+  local lblNo = btnNo:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  lblNo:SetPoint("CENTER", btnNo, "CENTER", 0, 0)
+  lblNo:SetText("No")
+  lblNo:SetTextColor(1, 0.4, 0.4)
+  btnNo:SetScript("OnClick", function()
+    d.pendingIndex = nil
+    d:Hide()
+  end)
+  btnNo:SetScript("OnEnter", function()
+    lblNo:SetTextColor(1, 0.6, 0.6)
+  end)
+  btnNo:SetScript("OnLeave", function()
+    lblNo:SetTextColor(1, 0.4, 0.4)
+  end)
+
+  confirmDialog = d
+  d:Hide()
+end
+
+function IT_ShowRemoveConfirm(idx)
+  pruneExpired()
+  local entries = InstanceTrackerDB.entries
+  local n = tlen(entries)
+  if idx < 1 or idx > n then
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff5555"..ADDON_NAME.."|r: No ID at position "..tostring(idx)..".")
+    return
+  end
+  local entry = entries[idx]
+  local zone = entry and entry.zone or "Unknown"
+  IT_CreateRemoveConfirmDialog()
+  confirmDialog.msg:SetText("Are you sure you want to remove ID "..idx..": "..zone.."?")
+  confirmDialog.pendingIndex = idx
+  confirmDialog:Show()
+end
+
 -- =======================
 -- Ladebildschirm-Logik: IsInInstance() von nicht-1 auf 1 = Instanz betreten
 -- =======================
@@ -177,6 +271,7 @@ end
 local hideListTimer = nil
 local listFrame = nil
 local statsFrame = nil
+local confirmDialog = nil
 
 local function IT_RefreshListFrame()
   if not listFrame or not listFrame.lines then return end
@@ -606,10 +701,7 @@ function InstanceTracker_RecreateFloatingButton()
     remBtn.entryIndex = i
     remBtn:SetScript("OnClick", function()
       local idx = this.entryIndex
-      if removeEntryByIndex(idx) then
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: ID "..idx.." removed.")
-        IT_RefreshListFrame()
-      end
+      IT_ShowRemoveConfirm(idx)
     end)
     listFrame.lines[i] = { text = text, btn = remBtn }
   end
@@ -681,12 +773,7 @@ SlashCmdList["INSTANCETRACKER"] = function(msg)
   if cmd == "remove" then
     local num = tonumber(rest)
     if num and num >= 1 and num <= 5 then
-      if removeEntryByIndex(num) then
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00"..ADDON_NAME.."|r: ID "..num.." entfernt.")
-        if listFrame then IT_RefreshListFrame() end
-      else
-        DEFAULT_CHAT_FRAME:AddMessage("|cffff5555"..ADDON_NAME.."|r: No ID at position "..num..".")
-      end
+      IT_ShowRemoveConfirm(num)
     else
       DEFAULT_CHAT_FRAME:AddMessage("|cffffff00"..ADDON_NAME.."|r: /it remove <1-5>")
     end
