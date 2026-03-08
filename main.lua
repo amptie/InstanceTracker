@@ -9,6 +9,20 @@ local TRACK_DURATION = 60 * 60
 local MAX_TIMERS = 5
 local IT_Initialized = false
 
+-- Raids: IsInInstance() = 1, aber keine Dungeon-ID; hier keine ID anlegen
+local RAID_ZONES = {
+  ["Zul'Gurub"] = true,
+  ["Tower of Karazhan"] = true,
+  ["Ruins of Ahn'Qiraj"] = true,
+  ["Temple of Ahn'Qiraj"] = true,
+  ["Ahn'Qiraj"] = true,
+  ["Molten Core"] = true,
+  ["Blackwing Lair"] = true,
+  ["Naxxramas"] = true,
+  ["Emerald Sanctum"] = true,
+  ["Onyxia's Lair"] = true,
+}
+
 -- =======================
 -- SavedVariables
 -- =======================
@@ -246,7 +260,9 @@ local function onAfterLoadingScreen()
         local oldIn = this.savedOldInInstance
         if oldIn ~= 1 and newIn == 1 then
           local zoneName = GetRealZoneText() or "Unknown"
-          addEntry(zoneName)
+          if not RAID_ZONES[zoneName] then
+            addEntry(zoneName)
+          end
         end
         if newIn == 1 then
           InstanceTrackerDB.lastInInstance = 1
