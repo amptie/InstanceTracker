@@ -56,6 +56,12 @@ local function IT_EnsureDB()
   if InstanceTrackerDB.btn.locked == nil then
     InstanceTrackerDB.btn.locked = true
   end
+  if InstanceTrackerDB.btn.minimapAngle == nil then
+    InstanceTrackerDB.btn.minimapAngle = 90
+  end
+  if InstanceTrackerDB.btn.minimapShown == nil then
+    InstanceTrackerDB.btn.minimapShown = true
+  end
   InstanceTrackerDB.lastSession = InstanceTrackerDB.lastSession or 0
 end
 
@@ -183,7 +189,7 @@ local function IT_RefreshListFrame()
     end
   end
   if listFrame.header then
-    listFrame.header:SetText(string.format("IDs: %d / %d", used, MAX_TIMERS))
+    listFrame.header:SetText("|cff00ff00"..ADDON_NAME.."|r IDs: "..used.." / "..MAX_TIMERS)
   end
   if listFrame.emptyLabel then
     if used == 0 then
@@ -197,7 +203,11 @@ end
 local function IT_ShowListFrame(anchor)
   if not listFrame then return end
   listFrame:ClearAllPoints()
-  listFrame:SetPoint("LEFT", anchor, "RIGHT", -4, 0)
+  if anchor == InstanceTrackerMinimapButton then
+    listFrame:SetPoint("RIGHT", anchor, "LEFT", 4, 0)
+  else
+    listFrame:SetPoint("LEFT", anchor, "RIGHT", -4, 0)
+  end
   listFrame:Show()
   IT_RefreshListFrame()
   if hideListTimer then
@@ -212,7 +222,7 @@ local function IT_IsMouseOverOurFrames()
   if not mf then return false end
   local f = mf
   while f do
-    if f == listFrame or f == InstanceTrackerFloatingButton then
+    if f == listFrame or f == InstanceTrackerFloatingButton or f == InstanceTrackerMinimapButton then
       return true
     end
     f = f:GetParent()
@@ -243,6 +253,93 @@ local function IT_CancelHideList()
     hideListTimer:Hide()
     hideListTimer.t = nil
     hideListTimer = nil
+  end
+end
+
+local MINIMAP_RADIUS = 78
+
+local function IT_UpdateMinimapButtonPosition()
+  if not InstanceTrackerMinimapButton then return end
+  local angle = (InstanceTrackerDB.btn.minimapAngle or 90) * 3.14159265358979 / 180
+  local x = MINIMAP_RADIUS * math.cos(angle)
+  local y = MINIMAP_RADIUS * math.sin(angle)
+  InstanceTrackerMinimapButton:ClearAllPoints()
+  InstanceTrackerMinimapButton:SetPoint("CENTER", Minimap, "CENTER", x, y)
+end
+
+function IT_CreateMinimapButton()
+  if InstanceTrackerMinimapButton then
+    IT_UpdateMinimapButtonPosition()
+    if InstanceTrackerDB.btn.minimapShown then
+      InstanceTrackerMinimapButton:Show()
+    else
+      InstanceTrackerMinimapButton:Hide()
+    end
+    return
+  end
+  -- Layout wie LibDBIcon-1.0 / DoiteAuras: 31x31 Button, Overlay TOPLEFT, Icon TOPLEFT mit Offsets
+  local mb = CreateFrame("Button", "InstanceTrackerMinimapButton", Minimap)
+  mb:SetWidth(31)
+  mb:SetHeight(31)
+  mb:SetFrameStrata("MEDIUM")
+  mb:SetFrameLevel(8)
+  mb:RegisterForDrag("LeftButton")
+  mb:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight", "ADD")
+
+  local border = mb:CreateTexture(nil, "OVERLAY")
+  border:SetWidth(53)
+  border:SetHeight(53)
+  border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+  border:SetPoint("TOPLEFT", mb, "TOPLEFT", 0, 0)
+
+  local icon = mb:CreateTexture(nil, "ARTWORK")
+  icon:SetTexture("Interface\\Icons\\INV_Misc_Map_01")
+  icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+  icon:SetWidth(17)
+  icon:SetHeight(17)
+  icon:SetPoint("TOPLEFT", mb, "TOPLEFT", 7, -6)
+
+  mb:SetScript("OnClick", function()
+    -- Leerer OnClick damit Minimap-Button-Arranger (z.B. pfUI addonbuttons) den Button als gültig erkennen
+    if this.dragging then return end
+    IT_ShowListFrame(this)
+  end)
+  mb:SetScript("OnEnter", function()
+    if this.dragging then return end
+    IT_ShowListFrame(this)
+  end)
+  mb:SetScript("OnLeave", function()
+    IT_HideListFrameDelayed()
+  end)
+  mb:SetScript("OnDragStart", function()
+    this.dragging = true
+    if listFrame then listFrame:Hide() end
+  end)
+  mb:SetScript("OnDragStop", function()
+    this.dragging = false
+  end)
+  mb:SetScript("OnUpdate", function()
+    if not this.dragging then return end
+    local mx, my = Minimap:GetCenter()
+    local px, py = GetCursorPosition()
+    local scale = UIParent:GetScale()
+    if scale and scale > 0 then
+      px = px / scale
+      py = py / scale
+    end
+    local dx = px - mx
+    local dy = py - my
+    local angle = math.atan2(dy, dx) * 180 / 3.14159265358979
+    if angle < 0 then angle = angle + 360 end
+    InstanceTrackerDB.btn.minimapAngle = angle
+    IT_UpdateMinimapButtonPosition()
+  end)
+
+  IT_UpdateMinimapButtonPosition()
+  if InstanceTrackerDB.btn.minimapShown then
+    mb:Show()
+  else
+    mb:Hide()
   end
 end
 
@@ -343,7 +440,7 @@ function InstanceTracker_RecreateFloatingButton()
 
   local header = listFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   header:SetPoint("TOPLEFT", listFrame, "TOPLEFT", 8, -8)
-  header:SetText("IDs: 0 / " .. MAX_TIMERS)
+  header:SetText("|cff00ff00"..ADDON_NAME.."|r IDs: 0 / " .. MAX_TIMERS)
   listFrame.header = header
 
   local emptyLabel = listFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -534,6 +631,7 @@ frame:SetScript("OnEvent", function()
     IT_EnsureDB()
     pruneExpired()
     InstanceTracker_RecreateFloatingButton()
+    IT_CreateMinimapButton()
     saveCurrentInInstance()
 
   elseif evt == "PLAYER_ENTERING_WORLD" then
